@@ -1,338 +1,65 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Custom Card Game Pro</title>
+    <meta charset="utf-8">
+    <title>通信テスト</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <style>
-        body { font-family: 'Helvetica Neue', Arial, sans-serif; text-align: center; background: #2c3e50; color: white; margin: 0; padding: 20px; }
-        .container { background: #34495e; padding: 20px; border-radius: 15px; max-width: 800px; margin: 0 auto; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-        .hidden { display: none !important; }
-        button { padding: 12px 24px; margin: 5px; border-radius: 8px; border: none; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        button:disabled { background: #7f8c8d !important; cursor: not-allowed; }
-        input { padding: 10px; border-radius: 5px; border: none; margin: 5px; }
-
-        /* ロビー・設定 */
-        .lobby-box { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 10px; margin: 15px 0; }
-        .host-section { border-bottom: 2px solid #2c3e50; padding-bottom: 20px; margin-bottom: 20px; }
-
-        /* ゲーム画面 */
-        .status-bar { background: #1abc9c; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 18px; }
-        .field-area { padding: 30px; background: #27ae60; border-radius: 50%; width: 200px; height: 200px; margin: 20px auto; display: flex; align-items: center; justify-content: center; border: 5px solid #2ecc71; }
-        .card { display: inline-block; width: 70px; height: 100px; background: white; color: black; border-radius: 10px; margin: 5px; line-height: 100px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.3); vertical-align: middle; }
-        .card.playable { border: 4px solid #f1c40f; transform: translateY(-10px); }
-        .my-turn { background: #e67e22 !important; }
-        
-        .controls { margin-top: 20px; padding: 15px; border-top: 1px solid #7f8c8d; }
-        .player-list-item { font-size: 14px; color: #bdc3c7; }
-        .current-player-highlight { color: #f1c40f; font-weight: bold; text-decoration: underline; }
+        body { font-family: sans-serif; padding: 20px; background: #222; color: white; }
+        button, input { padding: 10px; font-size: 16px; margin: 5px; }
+        #log { background: #000; color: #0f0; padding: 10px; height: 200px; overflow-y: scroll; font-family: monospace; }
+        .error { color: #f00; }
     </style>
 </head>
 <body>
-
-<div class="container">
-    <div id="setup-screen">
-        <h2>🎮 P2P カードゲーム設定</h2>
-        
-        <div class="host-section">
-            <h3>👑 ホストとして開始</h3>
-            <input type="file" id="excel-file" accept=".xlsx, .xls">
-            <div class="lobby-box">
-                <p>設定: カードを引く枚数 <input type="number" id="draw-count-input" value="1" min="1" style="width: 50px;"></p>
-                <p>接続中のプレイヤー: <span id="player-count">1</span> 名</p>
-                <div id="connected-list"></div>
-            </div>
-            <button onclick="createRoom()" id="btn-create" style="background: #e74c3c;">部屋を作成</button>
-            <button onclick="startGame()" id="btn-start" class="hidden" style="background: #27ae60;">ゲームを開始する！</button>
-            <p id="host-id-display" style="color: #f1c40f;"></p>
-        </div>
-
-        <div class="client-section">
-            <h3>👤 プレイヤーとして参加</h3>
-            <input type="text" id="join-id" placeholder="ホストIDを入力">
-            <button onclick="joinRoom()" style="background: #3498db;">参加する</button>
-        </div>
-    </div>
-
-    <div id="game-screen" class="hidden">
-        <div id="turn-display" class="status-bar">待機中...</div>
-        
-        <div class="field-area">
-            <div>
-                <div id="top-card" class="card">空</div>
-                <p style="font-size: 12px; margin-top: 5px;">場札</p>
-            </div>
-        </div>
-
-        <div id="hand-area">
-            <p>自分の手札</p>
-            <div id="hand-container"></div>
-        </div>
-
-        <div class="controls">
-            <button id="btn-draw" onclick="actDraw()" style="background: #2980b9;">カードを引く</button>
-            <button id="btn-pass" onclick="actPass()" style="background: #95a5a6;">パスする</button>
-            <p id="game-msg" style="color: #f1c40f; min-height: 20px;"></p>
-        </div>
-        
-        <div id="player-order-list" style="margin-top: 20px; font-size: 12px;"></div>
-    </div>
-</div>
-
-<script>
-    // --- グローバル変数 ---
-    const peer = new Peer();
-    let myId = "";
-    let isHost = false;
-    let connToHost = null;
+    <h2>WebRTC 通信テスト</h2>
+    <button onclick="becomeHost()">親になる</button>
+    <hr>
+    <input id="host-id" placeholder="親のIDを入力">
+    <button onclick="joinHost()">子になる</button>
     
-    // --- ゲーム状態（ホストが管理） ---
-    let gameState = {
-        status: 'lobby',
-        players: [], // {id: string, name: string} の配列
-        turnIndex: 0,
-        drawCount: 1,
-        topCard: null, // 現在の場札
-        allHands: {},  // 各IDの手札配列
-        deck: [],
-        rules: {},
-        actionsInRound: 0, // 今の周回で何人が行動したか
-        lastPlayerToPlay: null // 最後にカードを出して「場を流す」権利を持つ人
-    };
+    <h3>動作ログ</h3>
+    <div id="log"></div>
 
-    peer.on('open', (id) => { myId = id; });
+    <script>
+        const peer = new Peer();
+        const logBox = document.getElementById('log');
 
-    // ==========================================
-    // ホスト処理
-    // ==========================================
-    async function createRoom() {
-        const file = document.getElementById('excel-file').files[0];
-        if (!file) return alert("Excelを選択してください");
+        // 画面にログを書き出す関数
+        function writeLog(msg, isError = false) {
+            logBox.innerHTML += `<div class="${isError ? 'error' : ''}">> ${msg}</div>`;
+        }
 
-        const parsed = await parseExcel(file);
-        gameState.deck = parsed.deck;
-        gameState.rules = parsed.rules;
-        gameState.drawCount = parseInt(document.getElementById('draw-count-input').value);
-        
-        isHost = true;
-        gameState.players = [{id: myId, name: "ホスト"}];
-        
-        document.getElementById('host-id-display').innerText = "部屋ID: " + myId;
-        document.getElementById('btn-create').classList.add('hidden');
-        document.getElementById('btn-start').classList.remove('hidden');
+        // 自分のIDが発行された時
+        peer.on('open', id => {
+            writeLog('あなたのIDが発行されました: ' + id);
+        });
 
-        peer.on('connection', (conn) => {
+        // エラーが起きた時（ここで原因がわかります）
+        peer.on('error', err => {
+            writeLog('エラー発生: ' + err.type + ' - ' + err.message, true);
+        });
+
+        // 親機用の処理
+        function becomeHost() {
+            writeLog('子機からの接続を待機中...');
+            peer.on('connection', conn => {
+                writeLog('💡 子機が繋がりました！ (ID: ' + conn.peer + ')');
+                conn.on('data', data => writeLog('子機からのメッセージを受信: ' + data));
+            });
+        }
+
+        // 子機用の処理
+        function joinHost() {
+            const id = document.getElementById('host-id').value;
+            writeLog(id + ' に接続しています...');
+            const conn = peer.connect(id);
+            
             conn.on('open', () => {
-                const newPlayer = {id: conn.peer, name: "プレイヤー" + (gameState.players.length + 1)};
-                gameState.players.push(newPlayer);
-                updateLobbyUI();
-                
-                // 全員に現在の参加者リストを共有
-                broadcast({ type: 'LOBBY_UPDATE', players: gameState.players });
+                writeLog('💡 親機に繋がりました！メッセージを送信します。');
+                conn.send('こんにちは！テスト成功です！');
             });
-            // 子機からのアクション受信
-            conn.on('data', (data) => handleClientAction(conn.peer, data));
-        });
-        updateLobbyUI();
-    }
-
-    function startGame() {
-        gameState.status = 'playing';
-        // 手札配布
-        gameState.players.forEach(p => {
-            gameState.allHands[p.id] = drawFromDeck(5);
-        });
-        gameState.topCard = null; // 最初は場札なし
-        gameState.turnIndex = 0;
-        gameState.actionsInRound = 0;
-        
-        broadcast({ type: 'GAME_START', state: gameState });
-        refreshGameUI();
-    }
-
-    // ==========================================
-    // クライアント（子機）処理
-    // ==========================================
-    function joinRoom() {
-        const hostId = document.getElementById('join-id').value;
-        connToHost = peer.connect(hostId);
-        
-        connToHost.on('data', (data) => {
-            if (data.type === 'LOBBY_UPDATE') {
-                document.getElementById('player-count').innerText = data.players.length;
-            } else if (data.type === 'GAME_START' || data.type === 'SYNC') {
-                gameState = data.state;
-                document.getElementById('setup-screen').classList.add('hidden');
-                document.getElementById('game-screen').classList.remove('hidden');
-                refreshGameUI();
-            }
-        });
-    }
-
-    // ==========================================
-    // ゲームロジック（ホストが判定）
-    // ==========================================
-    function handleClientAction(playerId, action) {
-        if (!isHost || gameState.status !== 'playing') return;
-        if (gameState.players[gameState.turnIndex].id !== playerId) return;
-
-        let success = false;
-
-        if (action.type === 'PLAY') {
-            const card = gameState.allHands[playerId][action.index];
-            // ルール判定 (場札がない場合は何でも出せる)
-            if (!gameState.topCard || (gameState.rules[gameState.topCard] && gameState.rules[gameState.topCard][card] === 1)) {
-                gameState.topCard = card;
-                gameState.allHands[playerId].splice(action.index, 1);
-                gameState.lastPlayerToPlay = playerId; // 最後にカードを出した人を記録
-                success = true;
-            }
-        } else if (action.type === 'DRAW') {
-            const drawn = drawFromDeck(gameState.drawCount);
-            gameState.allHands[playerId].push(...drawn);
-            success = true;
-        } else if (action.type === 'PASS') {
-            // 場札がない時のみパス可能（または戦略的パスを許可する場合は条件削除）
-            if (!gameState.topCard) success = true;
         }
-
-        if (success) {
-            processTurnEnd();
-        }
-    }
-
-    function processTurnEnd() {
-        gameState.actionsInRound++;
-        
-        // 全員が1回ずつ行動したかチェック
-        if (gameState.actionsInRound >= gameState.players.length) {
-            // 場を流す処理
-            gameState.topCard = null;
-            gameState.actionsInRound = 0;
-            // 次のターンは「最後にカードを出した人」から。出していない場合はそのまま次へ。
-            if (gameState.lastPlayerToPlay) {
-                gameState.turnIndex = gameState.players.findIndex(p => p.id === gameState.lastPlayerToPlay);
-            } else {
-                gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
-            }
-            gameState.lastPlayerToPlay = null;
-            broadcastMsg("1巡しました。場を流します。");
-        } else {
-            gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
-        }
-        
-        broadcast({ type: 'SYNC', state: gameState });
-        refreshGameUI();
-    }
-
-    // ==========================================
-    // UI更新・ユーティリティ
-    // ==========================================
-    function refreshGameUI() {
-        const isMyTurn = gameState.players[gameState.turnIndex].id === myId;
-        const myHand = isHost ? gameState.allHands[myId] : gameState.myHand; // 通信時はフィルタリング
-        const turnPlayerName = gameState.players[gameState.turnIndex].name;
-
-        document.getElementById('turn-display').innerText = isMyTurn ? "🔥 あなたの番です" : `⌛ ${turnPlayerName}の番`;
-        document.getElementById('turn-display').className = isMyTurn ? "status-bar my-turn" : "status-bar";
-        
-        document.getElementById('top-card').innerText = gameState.topCard || "空";
-        
-        // 手札表示
-        const handCont = document.getElementById('hand-container');
-        handCont.innerHTML = "";
-        const currentHand = isHost ? gameState.allHands[myId] : gameState.allHands[myId]; // 実際は送信データから
-
-        // 手札は sync 時に各プレイヤーへ送られたものを使用
-        const displayHand = isHost ? gameState.allHands[myId] : (gameState.allHands ? gameState.allHands[myId] : []);
-        
-        displayHand.forEach((card, idx) => {
-            const el = document.createElement('div');
-            el.className = 'card';
-            // 出せるカードか判定
-            if (isMyTurn && (!gameState.topCard || (gameState.rules[gameState.topCard] && gameState.rules[gameState.topCard][card] === 1))) {
-                el.classList.add('playable');
-            }
-            el.innerText = card;
-            el.onclick = () => { if(isMyTurn) sendAction({type: 'PLAY', index: idx}); };
-            handCont.appendChild(el);
-        });
-
-        // ボタン制御
-        document.getElementById('btn-draw').disabled = !isMyTurn;
-        document.getElementById('btn-pass').disabled = !isMyTurn || gameState.topCard !== null;
-        
-        // 順番リスト
-        const orderList = document.getElementById('player-order-list');
-        orderList.innerHTML = "順番: " + gameState.players.map((p, i) => 
-            `<span class="${i === gameState.turnIndex ? 'current-player-highlight' : ''}">${p.name}</span>`
-        ).join(" → ");
-    }
-
-    function sendAction(action) {
-        if (isHost) {
-            handleClientAction(myId, action);
-        } else {
-            connToHost.send(action);
-        }
-    }
-
-    function actDraw() { sendAction({type: 'DRAW'}); }
-    function actPass() { sendAction({type: 'PASS'}); }
-
-    function updateLobbyUI() {
-        document.getElementById('player-count').innerText = gameState.players.length;
-        document.getElementById('connected-list').innerHTML = gameState.players.map(p => `<div class="player-list-item">・${p.name} (ID: ${p.id})</div>`).join("");
-    }
-
-    function broadcast(data) {
-        if (!isHost) return;
-        Object.values(peer.connections).forEach(conns => {
-            conns.forEach(c => {
-                // 各プレイヤーに「自分の手札」だけを含めた状態を送る
-                const personalizedState = JSON.parse(JSON.stringify(gameState));
-                // セキュリティ: 他人の手札は消して送るのが理想だが、今回は簡易化のため保持
-                c.send({ ...data, state: personalizedState });
-            });
-        });
-    }
-
-    function broadcastMsg(msg) {
-        document.getElementById('game-msg').innerText = msg;
-        setTimeout(() => document.getElementById('game-msg').innerText = "", 3000);
-    }
-
-    // --- 山札・Excel処理 ---
-    function drawFromDeck(num) {
-        let cards = [];
-        for(let i=0; i<num; i++) {
-            if(gameState.deck.length === 0) break;
-            cards.push(gameState.deck.pop());
-        }
-        return cards;
-    }
-
-    async function parseExcel(file) {
-        const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data);
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-        const cardNames = rows[0].slice(2); 
-        let deck = [];
-        let rules = {};
-        for (let i = 1; i < rows.length; i++) {
-            const row = rows[i];
-            if (!row[0]) continue;
-            for (let c = 0; c < (row[1] || 0); c++) deck.push(row[0]);
-            rules[row[0]] = {};
-            for (let j = 0; j < cardNames.length; j++) {
-                rules[row[0]][cardNames[j]] = row[j + 2] === 1 ? 1 : 0;
-            }
-        }
-        return { deck: deck.sort(() => Math.random() - 0.5), rules };
-    }
-</script>
+    </script>
 </body>
 </html>
