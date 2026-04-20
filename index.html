@@ -14,27 +14,24 @@
         button:disabled { background: #7f8c8d !important; cursor: not-allowed; }
         input { padding: 10px; border-radius: 5px; border: none; margin: 5px; }
 
-        /* ロビー・設定 */
         .lobby-box { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 10px; margin: 15px 0; }
         .setting-row { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 5px 0; }
 
-        /* ゲーム画面 */
         .status-bar { background: #1abc9c; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 18px; }
         .field-area { padding: 30px; background: #27ae60; border-radius: 50%; width: 180px; height: 180px; margin: 20px auto; display: flex; align-items: center; justify-content: center; border: 5px solid #2ecc71; position: relative; }
         .card { display: inline-block; width: 70px; height: 100px; background: white; color: black; border-radius: 10px; margin: 5px; line-height: 100px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 8px rgba(0,0,0,0.3); vertical-align: middle; position: relative; }
         .card.playable { border: 4px solid #f1c40f; transform: translateY(-10px); z-index: 10; }
         .my-turn { background: #e67e22 !important; animation: pulse 1.5s infinite; }
+        .finished-bar { background: #8e44ad !important; }
         
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.8; } 100% { opacity: 1; } }
 
-        /* 特殊演出用 */
         #win-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; pointer-events: none; opacity: 0; transition: opacity 0.5s; }
         #win-overlay.show { opacity: 1; pointer-events: auto; }
         .win-text { font-size: 60px; color: #f1c40f; font-weight: bold; text-shadow: 0 0 20px #fff; animation: bounce 1s infinite; }
         
         @keyframes bounce { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
 
-        /* 通知アラート */
         #alert-msg { position: fixed; top: 20%; left: 50%; transform: translateX(-50%); background: #e74c3c; color: white; padding: 20px 40px; border-radius: 10px; font-size: 24px; font-weight: bold; z-index: 90; display: none; box-shadow: 0 0 30px rgba(231, 76, 60, 0.8); }
 
         .player-list-item { font-size: 14px; margin: 5px 0; }
@@ -104,7 +101,7 @@
         deck: [],
         rules: {},
         lastPlayerToPlay: null,
-        winners: [] // 上がったプレイヤーのIDリスト
+        winners: [] 
     };
 
     peer.on('open', (id) => { myId = id; });
@@ -154,6 +151,8 @@
             } else if (data.type === 'WINNER_OUT') {
                 if (data.id === myId) document.getElementById('win-overlay').classList.add('show');
                 broadcastMsg(data.name + "さんが上がりました！");
+            } else if (data.type === 'MESSAGE') {
+                broadcastMsg(data.msg);
             }
         });
     }
@@ -170,7 +169,6 @@
                 gameState.lastPlayerToPlay = playerId;
                 success = true;
 
-                // 残り1枚・上がり判定
                 const remaining = gameState.allHands[playerId].length;
                 if (remaining === 1) {
                     broadcast({ type: 'ONE_LEFT', name: getPlayerName(playerId) });
@@ -191,28 +189,39 @@
         if (success) processTurnEnd();
     }
 
+    // 【最重要修正箇所】上がり判定と場を流すロジックの改善
     function processTurnEnd() {
-        // 次の「上がっていない」プレイヤーを探す（自動パス/スキップ）
         let nextIdx = gameState.turnIndex;
         let loopCount = 0;
+
+        // 次のプレイヤーを探すループ
         do {
             nextIdx = (nextIdx + 1) % gameState.players.length;
             loopCount++;
-            // 全員上がったか、1人以外全員上がった場合
-            if (loopCount >= gameState.players.length) {
-                gameState.status = 'finished';
-                break;
+
+            const checkPlayerId = gameState.players[nextIdx].id;
+
+            // スキップされる「上がった人」も含めて、巡回中に「最後にカードを出した人」の順番を通過したら場を流す
+            if (gameState.topCard !== null && gameState.lastPlayerToPlay === checkPlayerId) {
+                gameState.topCard = null;
+                gameState.lastPlayerToPlay = null;
+                broadcast({ type: 'MESSAGE', msg: "誰も出せませんでした！場が流れます。" });
+                if(isHost) broadcastMsg("誰も出せませんでした！場が流れます。");
             }
+
+            // 無限ループ防止
+            if (loopCount >= gameState.players.length) break;
+
+        // もしその人がすでに上がっていたら、さらに次の人へスキップする
         } while (gameState.winners.includes(gameState.players[nextIdx].id));
 
         gameState.turnIndex = nextIdx;
-        const nextPlayerId = gameState.players[nextIdx].id;
 
-        // 流し判定
-        if (gameState.topCard !== null && gameState.lastPlayerToPlay === nextPlayerId) {
-            gameState.topCard = null;
-            gameState.lastPlayerToPlay = null;
-            broadcastMsg("場が流れました。");
+        // 終了判定: 1人を除いて全員上がったらゲーム終了
+        if (gameState.players.length > 1 && gameState.winners.length >= gameState.players.length - 1) {
+            gameState.status = 'finished';
+            broadcast({ type: 'MESSAGE', msg: "🎉 全ての対戦が終了しました！" });
+            if(isHost) broadcastMsg("🎉 全ての対戦が終了しました！");
         }
         
         broadcast({ type: 'SYNC', state: gameState });
@@ -227,19 +236,30 @@
     }
 
     function refreshGameUI() {
-        const isMyTurn = gameState.players[gameState.turnIndex].id === myId;
-        const myHand = gameState.allHands[myId] || [];
-        const isAlreadyWon = gameState.winners.includes(myId);
+        if (gameState.status === 'finished') {
+            document.getElementById('turn-display').innerText = "🎉 ゲーム終了！";
+            document.getElementById('turn-display').className = "status-bar finished-bar";
+            document.getElementById('btn-draw').disabled = true;
+            document.getElementById('btn-pass').disabled = true;
+        } else {
+            const isMyTurn = gameState.players[gameState.turnIndex].id === myId;
+            const isAlreadyWon = gameState.winners.includes(myId);
 
-        document.getElementById('turn-display').innerText = isAlreadyWon ? "あなたは上がりです（観戦中）" : (isMyTurn ? "🔥 あなたの番です" : `${getPlayerName(gameState.players[gameState.turnIndex].id)}の番...`);
-        document.getElementById('turn-display').className = isMyTurn && !isAlreadyWon ? "status-bar my-turn" : "status-bar";
+            document.getElementById('turn-display').innerText = isAlreadyWon ? "あなたは上がりです（観戦中）" : (isMyTurn ? "🔥 あなたの番です" : `${getPlayerName(gameState.players[gameState.turnIndex].id)}の番...`);
+            document.getElementById('turn-display').className = isMyTurn && !isAlreadyWon ? "status-bar my-turn" : "status-bar";
+            document.getElementById('btn-draw').disabled = !isMyTurn || isAlreadyWon;
+            document.getElementById('btn-pass').disabled = !isMyTurn || isAlreadyWon;
+        }
+
         document.getElementById('top-card').innerText = gameState.topCard || "空";
         
+        const myHand = gameState.allHands[myId] || [];
         const handCont = document.getElementById('hand-container');
         handCont.innerHTML = "";
         myHand.forEach((card, idx) => {
             const el = document.createElement('div');
             el.className = 'card';
+            const isMyTurn = gameState.status !== 'finished' && gameState.players[gameState.turnIndex].id === myId;
             if (isMyTurn && (!gameState.topCard || (gameState.rules[gameState.topCard] && gameState.rules[gameState.topCard][card] === 1))) {
                 el.classList.add('playable');
             }
@@ -248,13 +268,10 @@
             handCont.appendChild(el);
         });
 
-        document.getElementById('btn-draw').disabled = !isMyTurn || isAlreadyWon;
-        document.getElementById('btn-pass').disabled = !isMyTurn || isAlreadyWon;
-
         const orderList = document.getElementById('player-order-list');
         orderList.innerHTML = "順番: " + gameState.players.map((p, i) => {
             const isWinner = gameState.winners.includes(p.id);
-            const isCurrent = i === gameState.turnIndex;
+            const isCurrent = i === gameState.turnIndex && gameState.status !== 'finished';
             return `<span class="${isCurrent ? 'current-player-highlight' : ''} ${isWinner ? 'finished' : ''}">${p.name}${isWinner ? '(済)' : `(${gameState.allHands[p.id].length}枚)`}</span>`;
         }).join(" → ");
     }
