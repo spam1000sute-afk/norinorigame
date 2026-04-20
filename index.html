@@ -16,6 +16,7 @@
 
         .lobby-box { background: rgba(0,0,0,0.2); padding: 15px; border-radius: 10px; margin: 15px 0; }
         .host-section { border-bottom: 2px solid #2c3e50; padding-bottom: 20px; margin-bottom: 20px; }
+        .setting-row { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 5px 0; }
 
         .status-bar { background: #1abc9c; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 18px; }
         .field-area { padding: 30px; background: #27ae60; border-radius: 50%; width: 200px; height: 200px; margin: 20px auto; display: flex; align-items: center; justify-content: center; border: 5px solid #2ecc71; }
@@ -24,8 +25,8 @@
         .my-turn { background: #e67e22 !important; }
         
         .controls { margin-top: 20px; padding: 15px; border-top: 1px solid #7f8c8d; }
-        .player-list-item { font-size: 14px; color: #bdc3c7; }
-        .current-player-highlight { color: #f1c40f; font-weight: bold; text-decoration: underline; }
+        .player-list-item { font-size: 14px; color: #bdc3c7; margin: 5px 0; }
+        .current-player-highlight { color: #f1c40f; font-weight: bold; text-decoration: underline; font-size: 14px;}
     </style>
 </head>
 <body>
@@ -37,14 +38,26 @@
         <div class="host-section">
             <h3>👑 ホストとして開始</h3>
             <input type="file" id="excel-file" accept=".xlsx, .xls">
+            
             <div class="lobby-box">
-                <p>設定: カードを引く枚数 <input type="number" id="draw-count-input" value="1" min="1" style="width: 50px;"></p>
-                <p>接続中のプレイヤー: <span id="player-count">1</span> 名</p>
+                <div class="setting-row">
+                    <label>初期の手札枚数:</label>
+                    <input type="number" id="initial-hand-input" value="5" min="1" style="width: 60px;"> 枚
+                </div>
+                <div class="setting-row">
+                    <label>ターン中に引く枚数:</label>
+                    <input type="number" id="draw-count-input" value="1" min="1" style="width: 60px;"> 枚
+                </div>
+                
+                <hr style="border: 1px solid #7f8c8d; margin: 15px 0;">
+                
+                <p>接続中のプレイヤー: <span id="player-count" style="font-weight:bold; color:#f1c40f;">1</span> 名</p>
                 <div id="connected-list"></div>
             </div>
+            
             <button onclick="createRoom()" id="btn-create" style="background: #e74c3c;">部屋を作成</button>
             <button onclick="startGame()" id="btn-start" class="hidden" style="background: #27ae60;">ゲームを開始する！</button>
-            <p id="host-id-display" style="color: #f1c40f;"></p>
+            <p id="host-id-display" style="color: #f1c40f; margin-top: 10px; font-size: 18px; font-weight: bold;"></p>
         </div>
 
         <div class="client-section">
@@ -94,7 +107,7 @@
         allHands: {},  
         deck: [],
         rules: {},
-        lastPlayerToPlay: null // 【変更点】最後にカードを出した人のIDを記録
+        lastPlayerToPlay: null
     };
 
     peer.on('open', (id) => { myId = id; });
@@ -106,7 +119,6 @@
         const parsed = await parseExcel(file);
         gameState.deck = parsed.deck;
         gameState.rules = parsed.rules;
-        gameState.drawCount = parseInt(document.getElementById('draw-count-input').value);
         
         isHost = true;
         gameState.players = [{id: myId, name: "ホスト"}];
@@ -117,7 +129,7 @@
 
         peer.on('connection', (conn) => {
             conn.on('open', () => {
-                const newPlayer = {id: conn.peer, name: "プレイヤー" + (gameState.players.length + 1)};
+                const newPlayer = {id: conn.peer, name: "プレイヤー" + (gameState.players.length)};
                 gameState.players.push(newPlayer);
                 updateLobbyUI();
                 broadcast({ type: 'LOBBY_UPDATE', players: gameState.players });
@@ -127,14 +139,22 @@
         updateLobbyUI();
     }
 
+    // 【変更点】ゲーム開始時に設定値を読み取るように修正
     function startGame() {
         gameState.status = 'playing';
+        
+        // 入力欄から設定値を読み取る
+        const initialHandSize = parseInt(document.getElementById('initial-hand-input').value) || 5;
+        gameState.drawCount = parseInt(document.getElementById('draw-count-input').value) || 1;
+
+        // 全員に指定した枚数の初期手札を配る
         gameState.players.forEach(p => {
-            gameState.allHands[p.id] = drawFromDeck(5);
+            gameState.allHands[p.id] = drawFromDeck(initialHandSize);
         });
+        
         gameState.topCard = null; 
         gameState.turnIndex = 0;
-        gameState.lastPlayerToPlay = null; // リセット
+        gameState.lastPlayerToPlay = null;
         
         broadcast({ type: 'GAME_START', state: gameState });
         document.getElementById('setup-screen').classList.add('hidden');
@@ -171,15 +191,15 @@
             if (!gameState.topCard || (gameState.rules[gameState.topCard] && gameState.rules[gameState.topCard][card] === 1)) {
                 gameState.topCard = card;
                 gameState.allHands[playerId].splice(action.index, 1);
-                gameState.lastPlayerToPlay = playerId; // 【変更点】カードを出した人を記録
+                gameState.lastPlayerToPlay = playerId; 
                 success = true;
             }
         } else if (action.type === 'DRAW') {
             const drawn = drawFromDeck(gameState.drawCount);
             gameState.allHands[playerId].push(...drawn);
-            success = true; // 引いてターン終了
+            success = true; 
         } else if (action.type === 'PASS') {
-            success = true; // 出せない（出したくない）時はパスしてターン終了
+            success = true; 
         }
 
         if (success) {
@@ -187,18 +207,13 @@
         }
     }
 
-    // 【変更点】ターン終了時と「場を流す」判定のロジック
     function processTurnEnd() {
-        // 次のプレイヤーに手番を移す
         gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
         const nextPlayerId = gameState.players[gameState.turnIndex].id;
 
-        // もし次のプレイヤーが「最後に場札を出した人」なら、1巡したことになる
         if (gameState.topCard !== null && gameState.lastPlayerToPlay === nextPlayerId) {
-            gameState.topCard = null; // 場を空にする
-            gameState.lastPlayerToPlay = null; // 記録をリセット
-            
-            // 全員にメッセージを通知
+            gameState.topCard = null; 
+            gameState.lastPlayerToPlay = null; 
             broadcast({ type: 'MESSAGE', msg: "誰も出せませんでした！場が流れます。" });
             if(isHost) broadcastMsg("誰も出せませんでした！場が流れます。");
         }
@@ -230,13 +245,15 @@
             handCont.appendChild(el);
         });
 
-        document.getElementById('btn-draw').disabled = !isMyTurn;
-        document.getElementById('btn-pass').disabled = !isMyTurn; // いつでもパス可能に
-        
+        // 残り手札の枚数を名前に表示してあげる（おまけ機能）
         const orderList = document.getElementById('player-order-list');
-        orderList.innerHTML = "順番: " + gameState.players.map((p, i) => 
-            `<span class="${i === gameState.turnIndex ? 'current-player-highlight' : ''}">${p.name}</span>`
-        ).join(" → ");
+        orderList.innerHTML = "順番: " + gameState.players.map((p, i) => {
+            const cardCount = isHost ? gameState.allHands[p.id].length : (gameState.allHands[p.id] ? gameState.allHands[p.id].length : "?");
+            return `<span class="${i === gameState.turnIndex ? 'current-player-highlight' : ''}">${p.name}(${cardCount}枚)</span>`;
+        }).join(" → ");
+
+        document.getElementById('btn-draw').disabled = !isMyTurn;
+        document.getElementById('btn-pass').disabled = !isMyTurn; 
     }
 
     function sendAction(action) {
@@ -249,7 +266,7 @@
 
     function updateLobbyUI() {
         document.getElementById('player-count').innerText = gameState.players.length;
-        document.getElementById('connected-list').innerHTML = gameState.players.map(p => `<div class="player-list-item">・${p.name} (ID: ${p.id})</div>`).join("");
+        document.getElementById('connected-list').innerHTML = gameState.players.map(p => `<div class="player-list-item">👤 ${p.name}</div>`).join("");
     }
 
     function broadcast(data) {
@@ -257,6 +274,7 @@
         Object.values(peer.connections).forEach(conns => {
             conns.forEach(c => {
                 const personalizedState = JSON.parse(JSON.stringify(gameState));
+                // 子機には全プレイヤーの手札枚数だけを教える（他人の手札の中身は見せない）設計にするのが理想ですが、今回は簡単化のためそのまま送ります
                 c.send({ ...data, state: personalizedState });
             });
         });
