@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>カスタムカードゲーム</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background-color: #2c3e50; color: white; margin: 0; padding: 20px; }
+        .screen { display: none; }
+        .active { display: block; }
+        button, input { padding: 10px; margin: 5px; font-size: 16px; }
+        .card { 
+            display: inline-block; width: 80px; height: 120px; background: white; color: black; 
+            border-radius: 8px; line-height: 120px; font-weight: bold; margin: 5px; 
+            cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: 0.2s;
+        }
+        .card.disabled { opacity: 0.5; cursor: not-allowed; background: #ccc; }
+        .card:hover:not(.disabled) { transform: translateY(-10px); }
+        #table-area { margin-top: 30px; padding: 20px; background: #34495e; border-radius: 10px; }
+        #hand-area { margin-top: 30px; }
+    </style>
+</head>
+<body>
+
+    <div id="setup-screen" class="screen active">
+        <h1>カスタムカードゲーム</h1>
+        
+        <div style="background: #34495e; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+            <h3>【親機（ホスト）として始める】</h3>
+            <p>1. ルール用Excelファイルを選択してください</p>
+            <input type="file" id="excel-file" accept=".xlsx, .xls" /><br>
+            <button onclick="startAsHost()" id="btn-host" disabled>親機になる</button>
+        </div>
+
+        <div style="background: #34495e; padding: 20px; border-radius: 10px;">
+            <h3>【子機（プレイヤー）として参加】</h3>
+            <input type="text" id="host-id-input" placeholder="親機のIDを入力">
+            <button onclick="startAsClient()">参加する</button>
+        </div>
+    </div>
+
+    <div id="game-screen" class="screen">
+        <h2 id="room-info"></h2>
+        <div id="table-area">
+            <h3>場のカード</h3>
+            <div id="top-card" class="card">なし</div>
+        </div>
+        <div id="hand-area">
+            <h3>あなたの手札</h3>
+            <div id="my-hand"></div>
+        </div>
+    </div>
+
+    <script>
+        // === 共通変数 ===
+        let peer;
+        let isHost = false;
+        let myId = "";
+        let globalRules = {}; // 全員が持つルール表
+
+        // === 親機用変数 ===
+        let clientConnections = {};
+        let gameState = { deck: [], topCard: null, hands: {} };
+
+        // === 子機用変数 ===
+        let hostConnection;
+
+        // ==========================================
+        // UI制御 & Excel読み込み
+        // ==========================================
+        document.getElementById('excel-file').addEventListener('change', (e) => {
+            if(e.target.files.length > 0) document.getElementById('btn-host').disabled = false;
+        });
+
+        function showScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.getElementById(screenId).classList.add('active');
+        }
+
+        async function parseExcel(file) {
+            const data = await file.arrayBuffer();
+            const workbook = XLSX.read(data);
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+            const cardNames = rows[0].slice(2);
+            let deck = [];
+            let rules = {};
+
+            for (let i = 1; i < rows.length; i++) {
+                if(!rows[i][0]) continue;
+                const mRowName = rows[i][0];
+                const count = rows[i][1] || 0;
+                
+                for (let c = 0; c < count; c++) deck.push(mRowName);
+
+                rules[mRowName] = {};
+                for (let j = 0; j < cardNames.length; j++) {
+                    rules[mRowName][cardNames[j]] = rows[i][j + 2] || 0;
+                }
+            }
+            return { deck, rules };
+        }
+
+        // ==========================================
+        // 親機（ホスト）の処理
+        // ==========================================
+        async function startAsHost() {
+            isHost = true;
+            const file = document.getElementById('excel-file').files[0];
+            const parsed = await parseExcel(file);
+            gameState.deck = parsed.deck.sort(() => Math.random() - 0.5); // シャッフル
+            globalRules = parsed.rules;
+
+            // 最初の場のカードを決定
+            gameState.topCard = gameState.deck.pop();
+
+            // ランダムな分かりやすいIDを生成
+            const roomId = 'room-' + Math.floor(Math.random() * 10000);
+            peer = new Peer(roomId);
+
+            peer.on('open', (id) => {
+                myId = id;
+                document.getElementById('room-info').innerText = `部屋ID: ${id} (参加者に教えてください)`;
+                showScreen('game-screen');
+                
+                // 親機自身の手札を5枚引く
+                gameState.hands[myId] = drawCards(5);
+                updateUI(gameState.hands[myId], gameState.topCard);
+            });
+
+            peer.on('connection', (conn) => {
+                clientConnections[conn.peer] = conn;
+                
+                // 子機に初期手札(5枚)とルールを送信
+                gameState.hands[conn.peer] = drawCards(5);
+                
+                conn.on('open', () => {
+                    conn.send({
+                        type: 'INIT',
+                        rules: globalRules,
+                        topCard: gameState.topCard,
+                        myHand: gameState.hands[conn.peer]
+                    });
+                });
+
+                // 子機からカードを出すリクエストが来た時
+                conn.on('data', (data) => {
+                    if (data.type === 'PLAY_CARD') handlePlayCard(conn.peer, data.cardIndex);
+                });
+            });
+        }
+
+        function drawCards(num) {
+            let drawn = [];
+            for(let i=0; i<num; i++) {
+                if(gameState.deck.length > 0) drawn.push(gameState.deck.pop());
+            }
+            return drawn;
+        }
+
+        function handlePlayCard(playerId, cardIndex) {
+            const hand = gameState.hands[playerId];
+            const playedCard = hand[cardIndex];
+
+            // Excelで定義したルールで判定 (場[topCard] に 手札[playedCard] が出せるか)
+            if (globalRules[gameState.topCard] && globalRules[gameState.topCard][playedCard] === 1) {
+                // 手札から削除して場を更新
+                hand.splice(cardIndex, 1);
+                gameState.topCard = playedCard;
+                syncAll();
+            } else {
+                alert("そのカードは出せません！");
+            }
+        }
+
+        function syncAll() {
+            // 親機の画面更新
+            updateUI(gameState.hands[myId], gameState.topCard);
+            
+            // 子機へ最新状態を送信
+            for (let id in clientConnections) {
+                clientConnections[id].send({
+                    type: 'UPDATE',
+                    topCard: gameState.topCard,
+                    myHand: gameState.hands[id]
+                });
+            }
+        }
+
+        // ==========================================
+        // 子機（クライアント）の処理
+        // ==========================================
+        function startAsClient() {
+            const hostId = document.getElementById('host-id-input').value.trim();
+            if(!hostId) return alert("IDを入力してください");
+
+            peer = new Peer();
+            peer.on('open', () => {
+                hostConnection = peer.connect(hostId);
+                
+                hostConnection.on('open', () => {
+                    showScreen('game-screen');
+                    document.getElementById('room-info').innerText = `接続先: ${hostId}`;
+                });
+
+                hostConnection.on('data', (data) => {
+                    if (data.type === 'INIT') {
+                        globalRules = data.rules;
+                        updateUI(data.myHand, data.topCard);
+                    } else if (data.type === 'UPDATE') {
+                        updateUI(data.myHand, data.topCard);
+                    }
+                });
+            });
+        }
+
+        // ==========================================
+        // 画面描画ロジック (親機・子機共通)
+        // ==========================================
+        function updateUI(myHand, topCard) {
+            // 場のカードを更新
+            document.getElementById('top-card').innerText = topCard;
+
+            // 手札を更新
+            const handDiv = document.getElementById('my-hand');
+            handDiv.innerHTML = '';
+
+            myHand.forEach((cardName, index) => {
+                const cardEl = document.createElement('div');
+                cardEl.className = 'card';
+                cardEl.innerText = cardName;
+
+                // 出せるカードかどうかの判定 (ルール表が存在し、値が1ならOK)
+                const canPlay = globalRules[topCard] && globalRules[topCard][cardName] === 1;
+                
+                if (!canPlay) {
+                    cardEl.classList.add('disabled');
+                } else {
+                    cardEl.onclick = () => attemptPlayCard(index);
+                }
+
+                handDiv.appendChild(cardEl);
+            });
+        }
+
+        // カードをクリックした時の処理
+        function attemptPlayCard(cardIndex) {
+            if (isHost) {
+                // 親機なら直接処理を実行
+                handlePlayCard(myId, cardIndex);
+            } else {
+                // 子機なら親に通信
+                hostConnection.send({ type: 'PLAY_CARD', cardIndex: cardIndex });
+            }
+        }
+    </script>
+</body>
+</html>
