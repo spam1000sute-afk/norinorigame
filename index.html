@@ -149,6 +149,10 @@
         gameState.actionsInRound = 0;
         
         broadcast({ type: 'GAME_START', state: gameState });
+
+        document.getElementById('setup-screen').classList.add('hidden');
+        document.getElementById('game-screen').classList.remove('hidden');
+        
         refreshGameUI();
     }
 
